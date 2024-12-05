@@ -1,4 +1,4 @@
-# Capuchin Morphology Data and Analysis\
+# Capuchin Morphology Data and Analysis
 This repository contains the data and R code for the study on white-faced capuchin facial and scrotal morphology.\
 
 ## Repository Structure\
