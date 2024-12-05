@@ -5,5 +5,5 @@ This repository contains the data and R code for the study on white-faced capuch
 - `data/`: Contains the raw data files used in the analyses. \
 - `scripts/`: Contains the R scripts used for analyses.\
 - `README.md`: Explains the repository contents and usage instructions.\
-\
+
 
