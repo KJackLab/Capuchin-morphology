@@ -37,6 +37,11 @@ df <- df %>%
 # Check  unique levels of  dominance_rank
 print(unique(df$dominance_rank))
 
+df$date <- as.Date(df$date, format = "%Y.%m.%d")
+
+df$laser_type <- ifelse(df$date < as.Date("2023-07-01"), "1", "2")
+
+
 # Define the function to impute missing values
 impute_closest <- function(x) {
   non_na_indices <- which(!is.na(x)) # Get indices of non-NA values
@@ -114,9 +119,9 @@ drop1(scrotum_model, test ="Chisq")
 r.squaredGLMM(scrotum_model)
 
 # Simulate and plot residuals
-res_scrotum_model <- simulateResiduals(scrotum_model)
-plot(res_scrotum_model)  # Residual diagnostics #LOOKS GOOD
-plot(allEffects(scrotum_model))
+res_scrotum_model1 <- simulateResiduals(scrotum_model1)
+plot(res_scrotum_model1)  # Residual diagnostics #LOOKS GOOD
+plot(allEffects(scrotum_model1))
 
 #test outliers
 testOutliers(res_scrotum_model)
@@ -201,12 +206,18 @@ df_filtered <- df_filtered  %>%
 #Check the unique levels of the dominance_rank column
 print(unique(df_filtered$dominance_rank))
 
+
+
 # Check the structure of the dataset
 str(df_filtered)
 head(df_filtered)
 
 # Summary statistics of the dataset
 summary(df_filtered)
+
+df_filtered$date <- as.Date(df_filtered$date, format = "%Y.%m.%d")
+
+df_filtered$laser_type <- ifelse(df_filtered$date < as.Date("2023-07-01"), "1", "2")
 
 # Make sure each ind. is either alpha or subordinate. NOT both
 table(df_filtered$individual, df_filtered$dominance_rank)
@@ -565,7 +576,7 @@ hist(df_ratio_facial$facial_ratio)
 shapiro.test(df_ratio_facial$facial_ratio) #p=0.90
 
 #Fit mixed-effect model
-facial_ratio_model <- lme4::lmer(facial_ratio ~ dominance_rank + body_length + age + (1 | individual), data = df_ratio_facial)
+facial_ratio_model <- lme4::lmer(facial_ratio ~ dominance_rank + body_length + age + laser_type + (1 | individual), data = df_ratio_facial)
 
 #Diagnostics and model output
 summary(facial_ratio_model)
@@ -1037,3 +1048,95 @@ icc_body <- icc(body_matrix, model = "twoway", type = "agreement", unit = "singl
 
 # Print the results
 print(icc_body)
+
+
+# Convert dominance rank to a binary factor for logistic regression
+df$dominance_rank_binary <- ifelse(df$dominance_rank == "Alpha", 1, 0)
+
+# Fit logistic regression model
+dominance_model <- glm(dominance_rank_binary ~ body_length, data = df, family = "binomial")
+
+# Check the summary of the model to see if body length is a significant predictor
+summary(dominance_model)
+
+
+#Analyses with Laser type included in models####
+
+scrotum_model1 <- lme4::lmer(scrotum_width ~ dominance_rank + body_length + age + laser_type + (1 | individual), data = df_scrotum_width)
+# Diagnostics and model output
+summary(scrotum_model1)
+drop1(scrotum_model1, test ="Chisq")
+r.squaredGLMM(scrotum_model1)
+
+# Simulate and plot residuals
+res_scrotum_model1 <- simulateResiduals(scrotum_model1)
+plot(res_scrotum_model1)  # Residual diagnostics #LOOKS GOOD
+plot(allEffects(scrotum_model1))
+
+# Fit mixed-effects model for facial length
+facial_width_model1 <- lme4::lmer(facial_width ~ dominance_rank + body_length + age + laser_type + (1 | individual), data = df_facial_width)
+
+#Diagnostics and model output
+summary(facial_width_model1)
+drop1(facial_width_model1, test ="Chisq")
+r.squaredGLMM(facial_width_model1)
+
+# Simulate residuals and plot diagnostics
+res_facial_width_model1 <- simulateResiduals(facial_width_model1)
+plot(res_facial_width_model)  # looks fine
+plot(allEffects(facial_width_model)) #looks fine
+
+
+#Fix mixed-effects model
+muzzle_width_model1 <- lme4::lmer(muzzle_width ~ dominance_rank + body_length + age + laser_type + (1 | individual), data = df_muzzle)
+
+#Diagnostics and model output
+summary(muzzle_width_model1)
+drop1(muzzle_width_model1, test ="Chisq")
+r.squaredGLMM(muzzle_width_model1)
+
+#Model Diagnostics
+res_muzzle_width_model1 <- simulateResiduals(muzzle_width_model1)
+plot(res_muzzle_width_model1)  
+plot(allEffects(muzzle_width_model1))
+
+#Fit mixed-effects model
+brow_model1 <- lme4::lmer(brow_width ~ dominance_rank + body_length + age + laser_type + (1 | individual), data = df_brow)
+
+#Diagnostics and model output
+summary(brow_model1)
+drop1(brow_model1, test="Chisq")
+r.squaredGLMM(brow_model1)
+
+#Residuals diagnostics
+residuals_sim1 <- simulateResiduals(fittedModel = brow_model1)
+plot(residuals_sim1)
+plot(allEffects(brow_model1))
+
+# Fit mixed-effects model for facial length
+facial_length_model1 <- lme4::lmer(facial_length ~ dominance_rank + body_length + age + laser_type + (1 | individual), data = df_length)
+
+#Diagnostics and model output
+summary(facial_length_model1)
+drop1(facial_length_model1, test= "Chisq")
+r.squaredGLMM(facial_length_model1)
+
+# Simulate residuals and plot diagnostics
+res_facial_length_model1 <- simulateResiduals(facial_length_model1)
+plot(res_facial_length_model1)  # Residual diagnostics
+plot(allEffects(facial_length_model1))
+
+#Fit mixed-effect model
+facial_ratio_model1 <- lme4::lmer(facial_ratio ~ dominance_rank + body_length + age + laser_type + (1 | individual), data = df_ratio_facial)
+
+#Diagnostics and model output
+summary(facial_ratio_model1)
+drop1(facial_ratio_model1, test= "Chisq")
+r.squaredGLMM(facial_ratio_model1)
+
+# Residuals for facial ratio model
+res_facial_ratio_model1 <- simulateResiduals(facial_ratio_model1)
+plot(res_facial_ratio_model1)
+testUniformity(res_facial_ratio_model1)
+testDispersion(res_facial_ratio_model1)
+
