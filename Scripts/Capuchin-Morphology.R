@@ -15,6 +15,8 @@ library(stats)
 library(graphics)
 library(zoo)
 library(tidyr)
+library(emmeans)
+library(ggeffects)
 
 #Load and prepare data for scrotum analysis####
 df <- photogrammetry_dataset_stable
@@ -106,6 +108,17 @@ df_scrotum_width <- df %>%
 # count sample size for this analysis
 table(df_scrotum_width$individual, df_scrotum_width$dominance_rank)
 
+# Calculate mean scrotum width per individual
+df_scrotum_summary <- df_scrotum_width %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_scrotum_width = mean(scrotum_width, na.rm = TRUE),
+    sd_scrotum_width = sd(scrotum_width, na.rm = TRUE),
+    n = n(),
+    se_scrotum_width = sd_scrotum_width / sqrt(n)
+  ) %>%
+  ungroup()
+
 # Fit mixed-effects model for scrotum width
 scrotum_model <- lme4::lmer(scrotum_width ~ dominance_rank + body_length + age + (1 | individual), data = df_scrotum_width)
 
@@ -119,9 +132,9 @@ drop1(scrotum_model, test ="Chisq")
 r.squaredGLMM(scrotum_model)
 
 # Simulate and plot residuals
-res_scrotum_model1 <- simulateResiduals(scrotum_model1)
-plot(res_scrotum_model1)  # Residual diagnostics #LOOKS GOOD
-plot(allEffects(scrotum_model1))
+res_scrotum_model <- simulateResiduals(scrotum_model)
+plot(res_scrotum_model)  # Residual diagnostics #LOOKS GOOD
+plot(allEffects(scrotum_model))
 
 #test outliers
 testOutliers(res_scrotum_model)
@@ -136,39 +149,93 @@ dispersion_test_result_scrotum <- testDispersion(res_scrotum_model)
 # Print dispersion test result
 print(dispersion_test_result_scrotum) #p=0.88
 
-# Plot scrotum width by dominance rank
-p1<-ggplot(df_clean_scrotum_width, aes(x = dominance_rank, y = scrotum_width, fill = dominance_rank)) +
-  geom_boxplot() +
-  geom_jitter(position = position_jitter(width = 0.1), size = 2, alpha = 0.3) +  # Use geom_jitter
-  geom_point(position = position_dodge(width = 0.75), size = 2, alpha = 0.3) +
-  labs(y = NULL, x = NULL, title = "Scrotum Width (mm)") +  # Remove y-axis title
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5)  # Centers the title
-  ) +
-  scale_fill_manual(values = c("Alpha" = "#6A0DAD", "Subordinate" = "#A9DFBF")) +
-  guides(fill = FALSE)  # Remove legend
-p1
+# Get model predictions (estimated marginal means)
+emm_scrotum <- emmeans(scrotum_model, ~ dominance_rank)
 
-# Scatter plot showing scrotum width vs age by dominance rank
-a1 <- ggplot(df, aes(x = age, y = scrotum_width, color = dominance_rank, shape = dominance_rank)) +  # Correctly close the aes function
-  geom_point(size = 3, alpha = 0.6) +  # Adds points with color and shape differentiation
-  geom_smooth(method = "lm", aes(group = 1), se = FALSE, color = "black", alpha = 0.7) +  # Adds a single regression line for all data
-  labs(
-    title = "Scrotum Width (mm)",  # Corrected the missing quotation mark
-    x = "Age (years)",
-    y = "Scrotum Width (mm)",
-    color = "Dominance Rank",
-    shape = "Dominance Rank"  # Ensures the legend for shape is also shown
-  ) +
-  theme_minimal() +
+# Convert to dataframe for plotting
+emm_scrotum_df <- as.data.frame(emm_scrotum)
+
+set.seed(123)
+
+df_scrotum_summary <- df_scrotum_summary %>%
+  mutate(
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate")),
+    x_pos = ifelse(dominance_rank == "Alpha", 1, 1.5) + runif(n(), min = -0.1, max = 0.1)  # slight jitter
+  )
+
+p_scrotum <- ggplot() +
+  # Points for individual monkeys
+  geom_point(data = df_scrotum_summary,
+             aes(x = x_pos, y = mean_scrotum_width),
+             size = 3, alpha = 0.7, shape = 21, fill = "white", color = "black") +
+  
+  # Error bars for individuals
+  geom_errorbar(data = df_scrotum_summary,
+                aes(x = x_pos, ymin = mean_scrotum_width - se_scrotum_width, ymax = mean_scrotum_width + se_scrotum_width),
+                width = 0.05, alpha = 0.5) +
+  
+  # Model prediction points (no jitter)
+  geom_point(data = emm_scrotum_df,
+             aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), y = emmean),
+             size = 5, shape = 23, fill = "black", color = "black") +
+  
+  geom_errorbar(data = emm_scrotum_df,
+                aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_x_continuous(breaks = c(1, 1.5),
+                     labels = c("Alpha", "Subordinate"),
+                     limits = c(0.8, 1.7)) +  
+  
+  labs(x = NULL, y = NULL, title = "Scrotum Width (mm)") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p_scrotum
+
+#data for figure 5- age plot
+# Create plotting dataset with LE included
+df_scrotum_age_plot <- df %>%
+  filter(!is.na(scrotum_width) & !is.na(dominance_rank) & !is.na(age) & !is.na(individual)) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_scrotum_width = mean(scrotum_width, na.rm = TRUE),
+    sd_scrotum_width = sd(scrotum_width, na.rm = TRUE),
+    se_scrotum_width = sd_scrotum_width / sqrt(n()),
+    mean_age = mean(age, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")  # Mark LE separately
+  )
+
+
+scrotum_age_pred <- ggpredict(scrotum_model, terms = "age [all]")
+
+
+p_scrotum_age <- ggplot() +
+  geom_ribbon(data = scrotum_age_pred, aes(x = x, ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "grey") +
+  geom_line(data = scrotum_age_pred, aes(x = x, y = predicted), size = 1, color = "black") +
+  geom_point(data = df_scrotum_age_plot %>% filter(is_LE == "Other"),
+             aes(x = mean_age, y = mean_scrotum_width, fill = dominance_rank),
+             size = 3, shape = 21, color = "black", alpha = 0.9) +  # Black outline, solid fill
+  
+  # LE point separately (red fill)
+  geom_point(data = df_scrotum_age_plot %>% filter(is_LE == "LE"),
+             aes(x = mean_age, y = mean_scrotum_width),
+             size = 3, shape = 21, fill = "red", color = "black", alpha = 0.9) +
+  geom_errorbar(data = df_scrotum_age_plot,
+                aes(x = mean_age, ymin = mean_scrotum_width - se_scrotum_width, ymax = mean_scrotum_width + se_scrotum_width),
+                width = 0.2, alpha = 0.5) +
+  scale_fill_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF"), name = "Dominance Rank") +
+  labs(x = "Age (years)", y = NULL, title = "Scrotum Width (mm)") +
+  theme_minimal(base_size = 14) +
   theme(
-    plot.title = element_text(hjust = 0.5),  # Centers the title
-    legend.position = "bottom"  # Adjusts the legend position to the bottom
-  ) +
-  scale_color_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF")) +  # Deep indigo and pale green for contrast
-  scale_shape_manual(values = c("Alpha" = 17, "Subordinate" = 15))  # Different shapes for each rank
-a1
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "none"  # Remove legend
+  )
+
+p_scrotum_age
 
 #Load/organize/impute data for Facial analyses####
 dff <- photogrammetry_dataset_stable #dataset WITHOUT outlier (LE)
@@ -293,6 +360,15 @@ ks_test_result_fw <- testUniformity(res_facial_width_model)
 # Print KS test result
 print(ks_test_result_fw) 
 
+lme4::ranef(facial_width_model)
+ranefs <- ranef(facial_width_model)$individual
+ranefs$ID <- rownames(ranefs)
+ggplot(ranefs, aes(x = reorder(ID, `(Intercept)`), y = `(Intercept)`)) +
+  geom_point() +
+  coord_flip() +
+  labs(y = "Random Intercept (BLUP)", x = "Individual", title = "Individual Deviations in Facial Width")
+
+
 # Perform dispersion test
 dispersion_test_result_fw <- testDispersion(res_facial_width_model)
 # Print dispersion test result
@@ -301,40 +377,141 @@ print(dispersion_test_result_fw) #fine p=0.63
 #test outliers
 testOutliers(res_facial_width_model)
 
-# Plot for Facial Width
-p2 <-ggplot(df_facial_width, aes(x = dominance_rank, y = facial_width, fill = dominance_rank)) +
-  geom_boxplot() +
-  geom_jitter(position = position_jitter(width = 0.1), size = 2, alpha = 0.3) +  # Use geom_jitter
-  geom_point(position = position_dodge(width = 0.75), size = 2, alpha = 0.3) +
-  labs(y = NULL, x = NULL, title = "Facial Width (mm)") +  # Remove y-axis title
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5)  # Centers the title
-  ) +
-  scale_fill_manual(values = c("Alpha" = "#6A0DAD", "Subordinate" = "#A9DFBF")) +
-  guides(fill = FALSE)  # Remove legend
+#model predictions for plot (without outlier)
+emm_facial_width <- emmeans(facial_width_model, ~ dominance_rank)
+emm_facial_width_df <- as.data.frame(emm_facial_width)
 
-p2
+#data for plot (with outlier)
+df_facial_width_plot <- dff %>%
+  filter(!is.na(facial_width) & !is.na(dominance_rank) & !is.na(age) & !is.na(Temp) & !is.na(individual)) %>%
+  filter(complete.cases(dominance_rank, body_length, age, facial_width)) %>%
+  mutate(
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate")),
+    facial_width = as.numeric(facial_width)  
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_facial_width = mean(facial_width, na.rm = TRUE),
+    sd_facial_width = sd(facial_width, na.rm = TRUE),
+    n = n(),
+    se_facial_width = sd_facial_width / sqrt(n)
+  ) %>%
+  ungroup()
 
-# Scatter plot showing scrotum width vs age by dominance rank
-a2<-ggplot(df_facial_width, aes(x = age, y = facial_width, color = dominance_rank, shape = dominance_rank)) +
-  geom_point(size = 3, alpha = 0.6) +  # Adds points with color and shape differentiation
-  geom_smooth(method = "lm", aes(group = 1), se = FALSE, color = "black", alpha = 0.7) +  # Adds a single regression line for all data
-  labs(
-    title = "Facial Width (mm)",  # Corrected the missing quotation mark
-    x = "Age (years)",
-    y = "Facial Width (mm)",
-    color = "Dominance Rank",
-    shape = "Dominance Rank"  # Ensures the legend for shape is also shown
-  ) +
-  theme_minimal() +
+#Add LE points as red
+df_facial_width_plot <- df_facial_width_plot %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+
+#plot preparation
+set.seed(123)
+
+df_facial_width_plot <- df_facial_width_plot %>%
+  mutate(
+    x_pos = ifelse(dominance_rank == "Alpha", 1, 1.5) + runif(n(), min = -0.1, max = 0.1)
+  )
+
+
+#plot of facial width by dominance
+p_facial_width <- ggplot() +
+  # Individual points (color by LE vs Other)
+  geom_point(data = df_facial_width_plot,
+             aes(x = x_pos, y = mean_facial_width, fill = is_LE),
+             size = 3, alpha = 0.7, shape = 21, color = "black") +  # Shape 21 = hollow circle
+  geom_errorbar(data = df_facial_width_plot,
+                aes(x = x_pos, ymin = mean_facial_width - se_facial_width, ymax = mean_facial_width + se_facial_width),
+                width = 0.05, alpha = 0.5) +
+  
+  # Model predictions
+  geom_point(data = emm_facial_width_df,
+             aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), y = emmean),
+             size = 5, shape = 23, fill = "black", color = "black") +
+  
+  geom_errorbar(data = emm_facial_width_df,
+                aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_fill_manual(values = c("Other" = "white", "LE" = "red")) + 
+  scale_x_continuous(breaks = c(1, 1.5),
+                     labels = c("Alpha", "Subordinate"),
+                     limits = c(0.8, 1.7)) +
+  
+  labs(x = NULL, y = NULL, title = "Facial Width (mm)") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none")  
+
+p_facial_width
+
+#data for figure 5-age plot
+# Create plotting dataset with LE included
+# Create plotting dataset with LE included
+df_facial_width_age_plot <- dff %>%
+  filter(!is.na(facial_width) & !is.na(dominance_rank) & !is.na(age) & !is.na(individual)) %>%
+  mutate(
+    facial_width = as.numeric(facial_width),
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate")) 
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_facial_width = mean(facial_width, na.rm = TRUE),
+    sd_facial_width = sd(facial_width, na.rm = TRUE),
+    se_facial_width = sd_facial_width / sqrt(n()),
+    mean_age = mean(age, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+
+#to plot model predictions
+facial_width_age_pred <- ggpredict(facial_width_model, terms = "age [all]")
+
+#plot for age vs facial width
+p_facial_width_age <- ggplot() +
+  # Model prediction line + CI shading
+  geom_ribbon(data = facial_width_age_pred, aes(x = x, ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "grey") +
+  geom_line(data = facial_width_age_pred, aes(x = x, y = predicted), size = 1, color = "black") +
+  
+  # Points for non-LE individuals, correctly mapped FILL
+  geom_point(data = df_facial_width_age_plot %>% filter(is_LE == "Other"),
+             aes(x = mean_age, y = mean_facial_width, fill = dominance_rank),
+             size = 3, shape = 21, color = "black", alpha = 0.9) +
+  
+  # LE point separately (solid red)
+  geom_point(data = df_facial_width_age_plot %>% filter(is_LE == "LE"),
+             aes(x = mean_age, y = mean_facial_width),
+             size = 3, shape = 21, fill = "red", color = "black", alpha = 0.9) +
+  
+  # Error bars for individuals
+  geom_errorbar(data = df_facial_width_age_plot,
+                aes(x = mean_age, ymin = mean_facial_width - se_facial_width, ymax = mean_facial_width + se_facial_width),
+                width = 0.2, alpha = 0.5) +
+  
+  # Custom fill scale
+  scale_fill_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF"), name = "Dominance Rank") +
+  
+  labs(x = "Age (years)", y = NULL, title = "Facial Width (mm)") +
+  theme_minimal(base_size = 14) +
   theme(
-    plot.title = element_text(hjust = 0.5),  # Centers the title
-    legend.position = "bottom"  # Adjusts the legend position to the bottom
-  ) +
-  scale_color_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF")) +  # Deep indigo and pale green for contrast
-  scale_shape_manual(values = c("Alpha" = 17, "Subordinate" = 15))  # Different shapes for each rank
-a2
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "none"  # No legend
+  )
+
+p_facial_width_age
 
 #Muzzle width analysis####
 #Data Cleaning
@@ -377,39 +554,140 @@ print(dispersion_test_result_muzzle)
 #test outliers
 testOutliers(res_muzzle_width_model)
 
-#Plot for Muzzle Width
-p3<-ggplot(df_muzzle, aes(x = dominance_rank, y = muzzle_width, fill = dominance_rank)) +
-  geom_boxplot() +
-  geom_jitter(position = position_jitter(width = 0.1), size = 2, alpha = 0.3) +  # Use geom_jitter
-  geom_point(position = position_dodge(width = 0.75), size = 2, alpha = 0.3) +
-  labs(y = NULL, x = NULL, title = "Muzzle Width (mm)") +  # Remove y-axis title
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5)  # Centers the title
-  ) +
-  scale_fill_manual(values = c("Alpha" = "#6A0DAD", "Subordinate" = "#A9DFBF")) +
-  guides(fill = FALSE)  # Remove legend
-p3
+#model predictions for plot
+emm_muzzle_width <- emmeans(muzzle_width_model, ~ dominance_rank)
+emm_muzzle_width_df <- as.data.frame(emm_muzzle_width)
 
-# Scatter plot showing scrotum width vs age by dominance rank
-a3<-ggplot(df_muzzle, aes(x = age, y = muzzle_width, color = dominance_rank, shape = dominance_rank)) +
-  geom_point(size = 3, alpha = 0.6) +  # Adds points with color and shape differentiation
-  geom_smooth(method = "lm", aes(group = 1), se = FALSE, color = "black", alpha = 0.7) +  # Adds a single regression line for all data
-  labs(
-    title = "Muzzle Width (mm)",  # Corrected the missing quotation mark
-    x = "Age (years)",
-    y = "Muzzle Width (mm)",
-    color = "Dominance Rank",
-    shape = "Dominance Rank"  # Ensures the legend for shape is also shown
-  ) +
-  theme_minimal() +
+# Data for plotting (with LE)
+df_muzzle_width_plot <- dff %>%
+  filter(!is.na(muzzle_width) & !is.na(dominance_rank) & !is.na(age) & !is.na(Temp) & !is.na(individual)) %>%
+  filter(complete.cases(dominance_rank, body_length, age, muzzle_width)) %>%
+  mutate(
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate")),
+    muzzle_width = as.numeric(muzzle_width)  
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_muzzle_width = mean(muzzle_width, na.rm = TRUE),
+    sd_muzzle_width = sd(muzzle_width, na.rm = TRUE),
+    n = n(),
+    se_muzzle_width = sd_muzzle_width / sqrt(n)
+  ) %>%
+  ungroup()
+
+# Add LE points in red
+df_muzzle_width_plot <- df_muzzle_width_plot %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+# Prepare jittered x-positions
+set.seed(123)
+
+df_muzzle_width_plot <- df_muzzle_width_plot %>%
+  mutate(
+    x_pos = ifelse(dominance_rank == "Alpha", 1, 1.5) + runif(n(), min = -0.1, max = 0.1)
+  )
+
+#muzzle width by dominance rank
+p_muzzle_width <- ggplot() +
+  # Individual points (color by LE vs Other)
+  geom_point(data = df_muzzle_width_plot,
+             aes(x = x_pos, y = mean_muzzle_width, fill = is_LE),
+             size = 3, alpha = 0.7, shape = 21, color = "black") +
+  
+  # Individual error bars
+  geom_errorbar(data = df_muzzle_width_plot,
+                aes(x = x_pos, ymin = mean_muzzle_width - se_muzzle_width, ymax = mean_muzzle_width + se_muzzle_width),
+                width = 0.05, alpha = 0.5) +
+  
+  # Model predictions
+  geom_point(data = emm_muzzle_width_df,
+             aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), y = emmean),
+             size = 5, shape = 23, fill = "black", color = "black") +
+  
+  geom_errorbar(data = emm_muzzle_width_df,
+                aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_fill_manual(values = c("Other" = "white", "LE" = "red")) +
+  scale_x_continuous(breaks = c(1, 1.5),
+                     labels = c("Alpha", "Subordinate"),
+                     limits = c(0.8, 1.7)) +
+  
+  labs(x = NULL, y = NULL, title = "Muzzle Width (mm)") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none")  # Optional: remove legend
+
+p_muzzle_width
+
+#plot for figure 5 age vs muzzle
+# Create plotting dataset with LE included
+df_muzzle_width_age_plot <- dff %>%
+  filter(!is.na(muzzle_width) & !is.na(dominance_rank) & !is.na(age) & !is.na(individual)) %>%
+  mutate(
+    muzzle_width = as.numeric(muzzle_width),
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate"))
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_muzzle_width = mean(muzzle_width, na.rm = TRUE),
+    sd_muzzle_width = sd(muzzle_width, na.rm = TRUE),
+    se_muzzle_width = sd_muzzle_width / sqrt(n()),
+    mean_age = mean(age, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+
+muzzle_width_age_pred <- ggpredict(muzzle_width_model, terms = "age [all]")
+
+
+p_muzzle_width_age <- ggplot() +
+  # Model prediction line + CI shading
+  geom_ribbon(data = muzzle_width_age_pred, aes(x = x, ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "grey") +
+  geom_line(data = muzzle_width_age_pred, aes(x = x, y = predicted), size = 1, color = "black") +
+  
+  # Points for non-LE individuals
+  geom_point(data = df_muzzle_width_age_plot %>% filter(is_LE == "Other"),
+             aes(x = mean_age, y = mean_muzzle_width, fill = dominance_rank),
+             size = 3, shape = 21, color = "black", alpha = 0.9) +
+  
+  # LE point separately (solid red)
+  geom_point(data = df_muzzle_width_age_plot %>% filter(is_LE == "LE"),
+             aes(x = mean_age, y = mean_muzzle_width),
+             size = 3, shape = 21, fill = "red", color = "black", alpha = 0.9) +
+  
+  # Error bars for individuals
+  geom_errorbar(data = df_muzzle_width_age_plot,
+                aes(x = mean_age, ymin = mean_muzzle_width - se_muzzle_width, ymax = mean_muzzle_width + se_muzzle_width),
+                width = 0.2, alpha = 0.5) +
+  
+  # Custom fill scale
+  scale_fill_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF"), name = "Dominance Rank") +
+  
+  labs(x = "Age (years)", y = NULL, title = "Muzzle Width (mm)") +
+  theme_minimal(base_size = 14) +
   theme(
-    plot.title = element_text(hjust = 0.5),  # Centers the title
-    legend.position = "bottom"  # Adjusts the legend position to the bottom
-  ) +
-  scale_color_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF")) +  # Deep indigo and pale green for contrast
-  scale_shape_manual(values = c("Alpha" = 17, "Subordinate" = 15))  # Different shapes for each rank
-a3
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "none"
+  )
+
+p_muzzle_width_age
+
 
 #Brow width analysis####
 # Filter out missing values for brow_width
@@ -435,8 +713,8 @@ drop1(brow_model, test="Chisq")
 r.squaredGLMM(brow_model)
 
 #Residuals diagnostics
-residuals_sim <- simulateResiduals(fittedModel = brow_model)
-plot(residuals_sim)
+res_brow_width_model<- simulateResiduals(fittedModel = brow_model)
+plot(res_brow_width_model)
 
 # Perform Kolmogorov-Smirnov (KS) test
 ks_test_result_brow <- testUniformity(res_brow_width_model)
@@ -451,39 +729,140 @@ print(dispersion_test_result_brow) #p=0.632
 #test outliers
 testOutliers(res_brow_width_model)
 
-# Plot for Brow Width by dominance rank
-p4<-ggplot(df_brow, aes(x = dominance_rank, y = brow_width, fill = dominance_rank)) +
-  geom_boxplot() +
-  geom_jitter(position = position_jitter(width = 0.1), size = 2, alpha = 0.3) +  # Use geom_jitter
-  geom_point(position = position_dodge(width = 0.75), size = 2, alpha = 0.3) +
-  labs(y = NULL, x = NULL, title = "Brow Width (mm)") +  # Remove y-axis title
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5)  # Centers the title
-  ) +
-  scale_fill_manual(values = c("Alpha" = "#6A0DAD", "Subordinate" = "#A9DFBF")) +
-  guides(fill = FALSE)  # Remove legend
-p4
+#model estimates for plot
+emm_brow_width <- emmeans(brow_model, ~ dominance_rank)
+emm_brow_width_df <- as.data.frame(emm_brow_width)
 
-# Scatter plot showing Brow Width vs age by dominance rank
-a4 <- ggplot(df_brow, aes(x = age, y = brow_width, color = dominance_rank, shape = dominance_rank)) +
-  geom_point(size = 3, alpha = 0.6) +  # Adds points with color and shape differentiation
-  geom_smooth(method = "lm", aes(group = 1), se = FALSE, color = "black", alpha = 0.5) +  # Adds a single regression line for all data
-  labs(
-    title = "Brow Width (mm)",
-    x = "Age (years)",
-    y = "Brow Width (mm)",
-    color = "Dominance Rank",
-    shape = "Dominance Rank"  # Ensure the legend for shape is also shown
-  ) +
-  theme_minimal() +
+#data for plot
+df_brow_width_plot <- dff %>%
+  filter(!is.na(brow_width) & !is.na(dominance_rank) & !is.na(age) & !is.na(Temp) & !is.na(individual)) %>%
+  filter(complete.cases(dominance_rank, body_length, age, brow_width)) %>%
+  mutate(
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate")),
+    brow_width = as.numeric(brow_width)  
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_brow_width = mean(brow_width, na.rm = TRUE),
+    sd_brow_width = sd(brow_width, na.rm = TRUE),
+    n = n(),
+    se_brow_width = sd_brow_width / sqrt(n)
+  ) %>%
+  ungroup()
+
+# Add LE points
+df_brow_width_plot <- df_brow_width_plot %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+# Jitter x-axis
+set.seed(123)
+
+df_brow_width_plot <- df_brow_width_plot %>%
+  mutate(
+    x_pos = ifelse(dominance_rank == "Alpha", 1, 1.5) + runif(n(), min = -0.1, max = 0.1)
+  )
+
+#brow width vs dominance plot
+p_brow_width <- ggplot() +
+  # Individual points (color by LE)
+  geom_point(data = df_brow_width_plot,
+             aes(x = x_pos, y = mean_brow_width, fill = is_LE),
+             size = 3, alpha = 0.7, shape = 21, color = "black") +
+  
+  # Individual error bars
+  geom_errorbar(data = df_brow_width_plot,
+                aes(x = x_pos, ymin = mean_brow_width - se_brow_width, ymax = mean_brow_width + se_brow_width),
+                width = 0.05, alpha = 0.5) +
+  
+  # Model predictions
+  geom_point(data = emm_brow_width_df,
+             aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), y = emmean),
+             size = 5, shape = 23, fill = "black", color = "black") +
+  
+  geom_errorbar(data = emm_brow_width_df,
+                aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_fill_manual(values = c("Other" = "white", "LE" = "red")) +
+  scale_x_continuous(breaks = c(1, 1.5),
+                     labels = c("Alpha", "Subordinate"),
+                     limits = c(0.8, 1.7)) +
+  
+  labs(x = NULL, y = NULL, title = "Brow Width (mm)") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+
+p_brow_width
+
+#plot for figure 5 age vs muzzle
+# Create plotting dataset with LE included
+df_brow_width_age_plot <- dff %>%
+  filter(!is.na(brow_width) & !is.na(dominance_rank) & !is.na(age) & !is.na(individual)) %>%
+  mutate(
+    brow_width = as.numeric(brow_width),
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate"))
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_brow_width = mean(brow_width, na.rm = TRUE),
+    sd_brow_width = sd(brow_width, na.rm = TRUE),
+    se_brow_width = sd_brow_width / sqrt(n()),
+    mean_age = mean(age, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+#plot model predictions
+brow_width_age_pred <- ggpredict(brow_model, terms = "age [all]")
+
+p_brow_width_age <- ggplot() +
+  # Model prediction line + CI shading
+  geom_ribbon(data = brow_width_age_pred, aes(x = x, ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "grey") +
+  geom_line(data = brow_width_age_pred, aes(x = x, y = predicted), size = 1, color = "black") +
+  
+  # Points for non-LE individuals
+  geom_point(data = df_brow_width_age_plot %>% filter(is_LE == "Other"),
+             aes(x = mean_age, y = mean_brow_width, fill = dominance_rank),
+             size = 3, shape = 21, color = "black", alpha = 0.9) +
+  
+  # LE point separately (solid red)
+  geom_point(data = df_brow_width_age_plot %>% filter(is_LE == "LE"),
+             aes(x = mean_age, y = mean_brow_width),
+             size = 3, shape = 21, fill = "red", color = "black", alpha = 0.9) +
+  
+  # Error bars for individuals
+  geom_errorbar(data = df_brow_width_age_plot,
+                aes(x = mean_age, ymin = mean_brow_width - se_brow_width, ymax = mean_brow_width + se_brow_width),
+                width = 0.2, alpha = 0.5) +
+  
+  # Custom fill scale
+  scale_fill_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF"), name = "Dominance Rank") +
+  
+  labs(x = "Age (years)", y = NULL, title = "Brow Width (mm)") +
+  theme_minimal(base_size = 14) +
   theme(
-    plot.title = element_text(hjust = 0.5),  # Centers the title
-    legend.position = "bottom"  
-  ) +
-  scale_color_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF")) +  # Deep indigo and gold for contrast
-  scale_shape_manual(values = c("Alpha" = 17, "Subordinate" = 15))  # Different shapes for each rank
-a4
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "none"
+  )
+
+p_brow_width_age
+
+
 
 #Facial Height analysis#### 
 # Remove rows with missing values for the columns used in the model
@@ -525,39 +904,141 @@ print(dispersion_test_result_length)
 #test outliers
 testOutliers(res_facial_length_model)
 
-# Plot for facial length by dominance rank
-p5<-ggplot(df_length, aes(x = dominance_rank, y = facial_length, fill = dominance_rank)) +
-  geom_boxplot() +
-  geom_jitter(position = position_jitter(width = 0.1), size = 2, alpha = 0.3) +  # Use geom_jitter
-  geom_point(position = position_dodge(width = 0.75), size = 2, alpha = 0.3) +
-  labs(y = NULL, x = NULL, title = "Facial Height (mm)") +  # Remove y-axis title
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5)  # Centers the title
-  ) +
-  scale_fill_manual(values = c("Alpha" = "#6A0DAD", "Subordinate" = "#A9DFBF")) +
-  guides(fill = FALSE)  # Remove legend
-p5
+#model predictions for plot
+emm_facial_length <- emmeans(facial_length_model, ~ dominance_rank)
+emm_facial_length_df <- as.data.frame(emm_facial_length)
 
-# Scatter plot showing facial length vs age by dominance rank
-a5 <- ggplot(df_length, aes(x = age, y = facial_length, color = dominance_rank, shape = dominance_rank)) +
-  geom_point(size = 3, alpha = 0.6) +  # Adds points with color and shape differentiation
-  geom_smooth(method = "lm", aes(group = 1), se = FALSE, color = "black", alpha = 0.7) +  # Adds a single regression line for all data
-  labs(
-    title = "Facial Height (mm)",
-    x = "Age (years)",
-    y = "Facial Height (mm)",
-    color = "Dominance Rank",
-    shape = "Dominance Rank"  # Ensure the legend for shape is also shown
-  ) +
-  theme_minimal() +
+#data for plot
+df_facial_length_plot <- dff %>%
+  filter(!is.na(facial_length) & !is.na(dominance_rank) & !is.na(age) & !is.na(Temp) & !is.na(individual)) %>%
+  filter(complete.cases(dominance_rank, body_length, age, facial_length)) %>%
+  mutate(
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate")),
+    facial_length = as.numeric(facial_length)  
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_facial_length = mean(facial_length, na.rm = TRUE),
+    sd_facial_length = sd(facial_length, na.rm = TRUE),
+    n = n(),
+    se_facial_length = sd_facial_length / sqrt(n)
+  ) %>%
+  ungroup()
+
+# Add LE indicator
+df_facial_length_plot <- df_facial_length_plot %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+# Jittered x positions
+set.seed(123)
+
+df_facial_length_plot <- df_facial_length_plot %>%
+  mutate(
+    x_pos = ifelse(dominance_rank == "Alpha", 1, 1.5) + runif(n(), min = -0.1, max = 0.1)
+  )
+
+p_facial_length <- ggplot() +
+  # First: plot all the OTHER individuals (white dots)
+  geom_point(data = df_facial_length_plot %>% filter(is_LE == "Other"),
+             aes(x = x_pos, y = mean_facial_length),
+             size = 3, alpha = 0.7, shape = 21, fill = "white", color = "black") +
+  
+  # Then: plot LE separately (red dot)
+  geom_point(data = df_facial_length_plot %>% filter(is_LE == "LE"),
+             aes(x = x_pos, y = mean_facial_length),
+             size = 3, alpha = 0.9, shape = 21, fill = "red", color = "black") +
+  
+  # Individual error bars (for everyone)
+  geom_errorbar(data = df_facial_length_plot,
+                aes(x = x_pos, ymin = mean_facial_length - se_facial_length, ymax = mean_facial_length + se_facial_length),
+                width = 0.05, alpha = 0.5) +
+  
+  # Model predictions
+  geom_point(data = emm_facial_length_df,
+             aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), y = emmean),
+             size = 5, shape = 23, fill = "black", color = "black") +
+  
+  geom_errorbar(data = emm_facial_length_df,
+                aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_x_continuous(breaks = c(1, 1.5),
+                     labels = c("Alpha", "Subordinate"),
+                     limits = c(0.8, 1.7)) +
+  
+  labs(x = NULL, y = NULL, title = "Facial Height (mm)") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+
+p_facial_length
+
+#plot for figure 5- age vs facial height
+# Create plotting dataset with LE included
+df_facial_length_age_plot <- dff %>%
+  filter(!is.na(facial_length) & !is.na(dominance_rank) & !is.na(age) & !is.na(individual)) %>%
+  mutate(
+    facial_length = as.numeric(facial_length),
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate"))
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_facial_length = mean(facial_length, na.rm = TRUE),
+    sd_facial_length = sd(facial_length, na.rm = TRUE),
+    se_facial_length = sd_facial_length / sqrt(n()),
+    mean_age = mean(age, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+#plot model predictions
+facial_length_age_pred <- ggpredict(facial_length_model, terms = "age [all]")
+
+p_facial_length_age <- ggplot() +
+  # Model prediction line + CI shading
+  geom_ribbon(data = facial_length_age_pred, aes(x = x, ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "grey") +
+  geom_line(data = facial_length_age_pred, aes(x = x, y = predicted), size = 1, color = "black") +
+  
+  # Points for non-LE individuals
+  geom_point(data = df_facial_length_age_plot %>% filter(is_LE == "Other"),
+             aes(x = mean_age, y = mean_facial_length, fill = dominance_rank),
+             size = 3, shape = 21, color = "black", alpha = 0.9) +
+  
+  # LE point separately (solid red)
+  geom_point(data = df_facial_length_age_plot %>% filter(is_LE == "LE"),
+             aes(x = mean_age, y = mean_facial_length),
+             size = 3, shape = 21, fill = "red", color = "black", alpha = 0.9) +
+  
+  # Error bars for individuals
+  geom_errorbar(data = df_facial_length_age_plot,
+                aes(x = mean_age, ymin = mean_facial_length - se_facial_length, ymax = mean_facial_length + se_facial_length),
+                width = 0.2, alpha = 0.5) +
+  
+  # Custom fill scale
+  scale_fill_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF"), name = "Dominance Rank") +
+  
+  labs(x = "Age (years)", y = NULL, title = "Facial Height (mm)") +
+  theme_minimal(base_size = 14) +
   theme(
-    plot.title = element_text(hjust = 0.5),  # Centers the title
-    legend.position = "bottom"  # Adjusts the legend position to the bottom
-  ) +
-  scale_color_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF")) +  # Deep indigo and pale green for contrast
-  scale_shape_manual(values = c("Alpha" = 17, "Subordinate" = 15))  # Different shapes for each rank
-a5
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "none"
+  )
+
+p_facial_length_age
 
 #Ratio analyses####
 # Prepare data for facial width to height ratio
@@ -601,69 +1082,184 @@ print(dispersion_test_ratio)
 #test outliers
 testOutliers(res_facial_ratio_model)
 
-# Plot for facial width to height ratio
-p6 <- ggplot(df_ratio_facial, aes(x = dominance_rank, y = facial_ratio, fill = dominance_rank)) +
-  geom_boxplot() +
-  geom_jitter(position = position_jitter(width = 0.1), size = 2, alpha = 0.3) +  # Use geom_jitter
-  geom_point(position = position_dodge(width = 0.75), size = 2, alpha = 0.3) +
-  labs(y = NULL, x = NULL, title = "Facial Width-to-Height Ratio") +  # Remove y-axis title
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5)  # Centers the title
-  ) +
-  scale_fill_manual(values = c("Alpha" = "#6A0DAD", "Subordinate" = "#A9DFBF")) +
-  guides(fill = FALSE)  # Remove legend
-p6
 
+# model predictions for plot
+emm_facial_ratio <- emmeans(facial_ratio_model, ~ dominance_rank)
+emm_facial_ratio_df <- as.data.frame(emm_facial_ratio)
 
-# Scatter plot showing facial length vs age by dominance rank
-a6 <- ggplot(df_ratio_facial, aes(x = age, y = facial_ratio, color = dominance_rank, shape = dominance_rank)) +
-  geom_point(size = 3, alpha = 0.6) +  # Adds points with color and shape differentiation
-  geom_smooth(method = "lm", aes(group = 1), se = FALSE, color = "black", alpha = 0.7) +  # Adds a single regression line for all data
-  labs(
-    title = "Facial Width-to-Height Ratio",
-    x = "Age (years)",
-    y = "FWHR",
-    color = "Dominance Rank",
-    shape = "Dominance Rank"  # Ensures the legend for shape is also shown
-  ) +
-  theme_minimal() +
+# Data for facial width-to-height ratio (fWHR) plot
+df_facial_ratio_plot <- dff %>%
+  mutate(
+    facial_ratio = as.numeric(facial_width) / as.numeric(facial_length)  # Define facial ratio first
+  ) %>%
+  filter(!is.na(facial_ratio) & !is.na(dominance_rank) & !is.na(age) & !is.na(Temp) & !is.na(individual)) %>%
+  filter(complete.cases(dominance_rank, body_length, age, facial_width, facial_length)) %>%
+  mutate(
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate"))
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_facial_ratio = mean(facial_ratio, na.rm = TRUE),
+    sd_facial_ratio = sd(facial_ratio, na.rm = TRUE),
+    n = n(),
+    se_facial_ratio = sd_facial_ratio / sqrt(n)
+  ) %>%
+  ungroup()
+
+# Add LE indicator
+df_facial_ratio_plot <- df_facial_ratio_plot %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+# Jitter x positions
+set.seed(123)
+
+df_facial_ratio_plot <- df_facial_ratio_plot %>%
+  mutate(
+    x_pos = ifelse(dominance_rank == "Alpha", 1, 1.5) + runif(n(), min = -0.1, max = 0.1)
+  )
+
+p_facial_ratio <- ggplot() +
+  # First: plot all the OTHER individuals
+  geom_point(data = df_facial_ratio_plot %>% filter(is_LE == "Other"),
+             aes(x = x_pos, y = mean_facial_ratio),
+             size = 3, alpha = 0.7, shape = 21, fill = "white", color = "black") +
+  
+  # Then: plot LE separately
+  geom_point(data = df_facial_ratio_plot %>% filter(is_LE == "LE"),
+             aes(x = x_pos, y = mean_facial_ratio),
+             size = 3, alpha = 0.9, shape = 21, fill = "red", color = "black") +
+  
+  # Individual error bars
+  geom_errorbar(data = df_facial_ratio_plot,
+                aes(x = x_pos, ymin = mean_facial_ratio - se_facial_ratio, ymax = mean_facial_ratio + se_facial_ratio),
+                width = 0.05, alpha = 0.5) +
+  
+  # Model predictions
+  geom_point(data = emm_facial_ratio_df,
+             aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), y = emmean),
+             size = 5, shape = 23, fill = "black", color = "black") +
+  
+  geom_errorbar(data = emm_facial_ratio_df,
+                aes(x = ifelse(dominance_rank == "Alpha", 1, 1.5), ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, color = "black") +
+  
+  scale_x_continuous(breaks = c(1, 1.5),
+                     labels = c("Alpha", "Subordinate"),
+                     limits = c(0.8, 1.7)) +
+  
+  labs(x = NULL, y = NULL, title = "Facial Width-to-Height Ratio (fWHR)") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5, size =15),
+        legend.position = "none")
+
+p_facial_ratio
+
+#plot for figure 5- age vs rati
+# Create plotting dataset with LE included and define ratio
+df_facial_ratio_age_plot <- dff %>%
+  filter(!is.na(facial_width) & !is.na(facial_length) & !is.na(dominance_rank) & !is.na(age) & !is.na(individual)) %>%
+  mutate(
+    facial_width = as.numeric(facial_width),
+    facial_length = as.numeric(facial_length),
+    facial_ratio = facial_width / facial_length,  # Define facial ratio here
+    dominance_rank = case_when(
+      dominance_rank == "a" ~ "Alpha",
+      dominance_rank == "s" ~ "Subordinate",
+      TRUE ~ dominance_rank
+    ),
+    dominance_rank = factor(dominance_rank, levels = c("Alpha", "Subordinate"))
+  ) %>%
+  group_by(individual, dominance_rank) %>%
+  summarise(
+    mean_facial_ratio = mean(facial_ratio, na.rm = TRUE),
+    sd_facial_ratio = sd(facial_ratio, na.rm = TRUE),
+    se_facial_ratio = sd_facial_ratio / sqrt(n()),
+    mean_age = mean(age, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    is_LE = ifelse(individual == "LE", "LE", "Other")
+  )
+
+facial_ratio_age_pred <- ggpredict(facial_ratio_model, terms = "age [all]")
+
+p_facial_ratio_age <- ggplot() +
+  # Model prediction line + CI shading
+  geom_ribbon(data = facial_ratio_age_pred, aes(x = x, ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "grey") +
+  geom_line(data = facial_ratio_age_pred, aes(x = x, y = predicted), size = 1, color = "black") +
+  
+  # Points for non-LE individuals
+  geom_point(data = df_facial_ratio_age_plot %>% filter(is_LE == "Other"),
+             aes(x = mean_age, y = mean_facial_ratio, fill = dominance_rank),
+             size = 3, shape = 21, color = "black", alpha = 0.9) +
+  
+  # LE point separately (solid red)
+  geom_point(data = df_facial_ratio_age_plot %>% filter(is_LE == "LE"),
+             aes(x = mean_age, y = mean_facial_ratio),
+             size = 3, shape = 21, fill = "red", color = "black", alpha = 0.9) +
+  
+  # Error bars for individuals
+  geom_errorbar(data = df_facial_ratio_age_plot,
+                aes(x = mean_age, ymin = mean_facial_ratio - se_facial_ratio, ymax = mean_facial_ratio + se_facial_ratio),
+                width = 0.2, alpha = 0.5) +
+  
+  # Custom fill scale
+  scale_fill_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF"), name = "Dominance Rank") +
+  
+  labs(x = "Age (years)", y = NULL, title = "Facial Width-to-Height Ratio (fWHR)") +
+  theme_minimal(base_size = 14) +
   theme(
-    plot.title = element_text(hjust = 0.5),  # Centers the title
-    legend.position = "bottom"  # Adjusts the legend position to the bottom
-  ) +
-  scale_color_manual(values = c("Alpha" = "#4B0082", "Subordinate" = "#A9DFBF")) +  # Deep indigo and pale green for contrast
-  scale_shape_manual(values = c("Alpha" = 17, "Subordinate" = 15))  # Different shapes for each rank
-a6
+    plot.title = element_text(hjust = 0.5, size = 15),
+    legend.position = "none"
+  )
+
+p_facial_ratio_age
+
 
 #Create plots for scrotum and facial widths####
 library(patchwork)
 
-dominance_plot <- (p2 | p3 | p4) / 
-  (p5 | p6 | p1)
+dominance_plot <- (p_facial_width | p_muzzle_width | p_brow_width) / 
+  (p_facial_length | p_facial_ratio | p_scrotum)
+
 dominance_plot
 
 # Saving the plot as a high-resolution PNG for digital use
-ggsave("dominance_plot.png", plot = dominance_plot, width = 8, height = 6, dpi = 300)
+ggsave("~/Desktop/dominance_plot.png", plot = dominance_plot, width = 10, height = 6, dpi = 300)
 
-# Remove legends from individual plots if not already done
-a1 <- a1 + theme(legend.position = "none") 
-a2 <- a2 + theme(legend.position = "none")
-a3 <- a3 + theme(legend.position = "none")
-a4 <- a4 + theme(legend.position = "none") 
-a5 <- a5 + theme(legend.position = "none") 
-a6 <- a6 + theme(legend.position = "none") 
+# Remove legends individually if needed (but you already set legend.position = "none" in each plot earlier)
+p_scrotum_age <- p_scrotum_age + theme(legend.position = "none")
+p_facial_width_age <- p_facial_width_age + theme(legend.position = "none")
+p_muzzle_width_age <- p_muzzle_width_age + theme(legend.position = "none")
+p_brow_width_age <- p_brow_width_age + theme(legend.position = "none")
+p_facial_length_age <- p_facial_length_age + theme(legend.position = "none")
+p_facial_ratio_age <- p_facial_ratio_age + theme(legend.position = "none")
 
 # Combine the plots
-plot2 <- (a2 | a3 | a4) /
-  (a5 | a6 | a1)
+plot2 <- (p_facial_width_age | p_muzzle_width_age | p_brow_width_age) /
+  (p_facial_length_age | p_facial_ratio_age | p_scrotum_age)
 
-# Add a single legend
+# Add a single combined guide (legend), and put it at the bottom
 final_age_plot <- plot2 + plot_layout(guides = 'collect') & theme(legend.position = "bottom")
+
+# Print the final figure
 print(final_age_plot)
 
 # Saving the plot as a high-resolution PNG for digital use
-ggsave("Age_plot.png", plot = final_age_plot, width = 8, height = 6, dpi = 300)
+ggsave("~/Desktop/Age_plot.png", plot = final_age_plot, width = 10, height = 6, dpi = 300)
+
+
+getwd()
+
+
+
 
 #Facial analyses With outlier (LE). Used for supplemental material####
 #Facial width analysis
@@ -689,20 +1285,20 @@ drop1(facial_width_modell, test="Chisq")
 r.squaredGLMM(facial_width_modell)
 
 # Simulate residuals and plot diagnostics
-res_facial_width_model <- simulateResiduals(facial_width_model)
-plot(res_facial_width_model) 
-plot(allEffects(facial_width_model)) 
+res_facial_width_modell <- simulateResiduals(facial_width_modell)
+plot(res_facial_width_modell) 
+plot(allEffects(facial_width_modell)) 
 
 # Perform Kolmogorov-Smirnov (KS) test
-ks_test_result_fw <- testUniformity(res_facial_width_model)
+ks_test_result_fw <- testUniformity(res_facial_width_modell)
 print(ks_test_result_fw) 
 
 # Perform dispersion test
-dispersion_test_result_fw <- testDispersion(res_facial_width_model)
+dispersion_test_result_fw <- testDispersion(res_facial_width_modell)
 print(dispersion_test_result_fw) 
 
 #test outliers
-testOutliers(res_facial_width_model)
+testOutliers(res_facial_width_modell)
 
 #Muzzle width analysis
 #Data Cleaning
@@ -1139,4 +1735,6 @@ res_facial_ratio_model1 <- simulateResiduals(facial_ratio_model1)
 plot(res_facial_ratio_model1)
 testUniformity(res_facial_ratio_model1)
 testDispersion(res_facial_ratio_model1)
+
+
 
